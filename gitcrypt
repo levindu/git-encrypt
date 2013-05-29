@@ -23,6 +23,22 @@ $CIPHER
 EOF
 }
 
+yesno () {
+    local answer
+    while true; do
+	    read -p "$1" answer
+        answer=${answer:-$2}
+        case "$answer" in
+            [Yy]|[Yy]es)
+                return 0
+                ;;
+            [Nn]|[Nn]o)
+                return 1
+                ;;
+        esac
+    done
+}
+
 init_config() {
 	local answer skip_gen
 
@@ -35,17 +51,12 @@ init_config() {
 		echo -n "Enter name: "
 		read NAME
         if [ -f ${PASSWORD_STORE_DIR}/gitcrypt/$NAME.gpg ]; then
-            echo -n "Password for $NAME exists, use it? [Y/n]"
-			read answer
-			case "$answer" in
-				n*|N*)
-                    echo "You can remove ${PASSWORD_STORE_DIR}/gitcrypt/$NAME.gpg in order to create it."
-                    unset NAME
-					;;
-				*)
-                    skip_gen=1
-					;;
-			esac
+            if yesno "Password for $NAME exists, use it? [Y/n]" Y; then
+                skip_gen=1
+            else
+                echo "You can run 'gitcrypt rm $NAME' in order to create it."
+                unset NAME
+            fi
         fi
 	done
     git config gitcrypt.name $NAME
@@ -54,44 +65,35 @@ init_config() {
         save_pass
     fi
     create_git_conf
+    # prompt to reset
+    yesno "Run 'git reset --hard HEAD'? [Y/n] " Y \
+        && git reset --hard HEAD
 }
 
 gen_pass () {
 	while [ 1 ]; do
 		while [ -z "$SALT" ]; do
-			echo -n "Generate a random salt? [Y/n] "
-			read answer
+			if yesno "Generate a random salt? [Y/n] " Y; then
+				local md5=$(which md5 2>/dev/null || which md5sum 2>/dev/null)
+				SALT=$(head -c 10 < /dev/random | $md5 | cut -c-16)
+            else
+				echo -n "Shared salt as hex characters: "
+				read SALT
 
-			case "$answer" in
-				n*|N*)
-					echo -n "Shared salt as hex characters: "
-					read SALT
-
-					if [ $(echo "$SALT" | grep '[^a-f0-9]' | wc -l) -ne 0 ]; then
-						echo "Error: non-hex characters in salt"
-						unset -v SALT
-					fi
-					;;
-				*)
-					local md5=$(which md5 2>/dev/null || which md5sum 2>/dev/null)
-					SALT=$(head -c 10 < /dev/random | $md5 | cut -c-16)
-					;;
-			esac
+				if [ $(echo "$SALT" | grep '[^a-f0-9]' | wc -l) -ne 0 ]; then
+					echo "Error: non-hex characters in salt"
+					unset -v SALT
+				fi
+			fi
 		done
 
 		while [ -z "$SKIP_GEN" -a -z "$PASS" ]; do
-			echo -n "Generate a random password? [Y/n]"
-			read answer
-
-			case "$answer" in
-				n*|N*)
-					echo -n "Enter your passphrase: "
-					read PASS
-					;;
-				*)
-					PASS=$(cat /dev/urandom | LC_ALL="C" tr -dc '!@#$%^&*()_A-Z-a-z-0-9' | head -c32)
-					;;
-			esac
+			if yesno "Generate a random password? [Y/n]" Y; then
+				PASS=$(cat /dev/urandom | LC_ALL="C" tr -dc '!@#$%^&*()_A-Z-a-z-0-9' | head -c32)
+            else
+				echo -n "Enter your passphrase: "
+				read PASS
+			fi
 		done
 
 		while [ -z "$SKIP_GEN" ]; do
@@ -110,37 +112,23 @@ gen_pass () {
 		echo "salt:   $SALT"
 		echo "pass:   $PASS"
 		echo "cipher: $CIPHER"
-		echo -e -n "\nDoes this look right? [Y/n] "
-		read answer
-
-		case "$answer" in
-			n*|N*)
-				# Reconfigure
-				unset -v SALT
-				unset -v PASS
-				unset -v CIPHER
-				;;
-			*)
-				# Finished
-				break
-				;;
-		esac
+        echo
+		if ! yesno "Does this look right? [Y/n] " Y; then
+			# Reconfigure
+			unset -v SALT
+			unset -v PASS
+			unset -v CIPHER
+        fi
 	done
 }
 
 create_git_conf () {
-	echo -n "Do you want to use .git/info/attributes? [Y/n] "
-	read answer
-
 	local attrs
-	case "$answer" in
-		n*|N*)
-			attrs=".gitattributes"
-			;;
-		*)
-			attrs=".git/info/attributes"
-			;;
-	esac
+	if yesno "Do you want to use .git/info/attributes? [Y/n] " Y; then
+		attrs=".git/info/attributes"
+    else
+		attrs=".gitattributes"
+	fi
 
 	local pattern
 	echo -n "What files do you want encrypted? [*] "
