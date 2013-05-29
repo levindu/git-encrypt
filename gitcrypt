@@ -1,16 +1,62 @@
 #!/bin/bash
 
-readonly VERSION="0.3.0"
+readonly VERSION="0.3.1"
 readonly DEFAULT_CIPHER="aes-256-ecb"
 
+TOP_DIR=$(cd $(dirname $(readlink -f $0)) && pwd)
+PASS_PROG=$TOP_DIR/pass
+PASSWORD_STORE_DIR="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
+
+load_pass () {
+    local ARR
+    readarray -t ARR < <($PASS_PROG gitcrypt/$NAME)
+    PASS=${ARR[0]}
+    SALT=${ARR[1]}
+    CIPHER=${ARR[2]}
+}
+
+save_pass () {
+    $PASS_PROG insert -m -f -q gitcrypt/$NAME <<EOF
+$PASS
+$SALT
+$CIPHER
+EOF
+}
+
 init_config() {
-	local answer
+	local answer skip_gen
 
 	if [ ! -d ".git" ]; then
 		echo "Directory is not a git repository. Did you forget to run 'git init'?"
 		return 1
 	fi
 
+	while [ -z "$NAME" ]; do
+		echo -n "Enter name: "
+		read NAME
+        if [ -f ${PASSWORD_STORE_DIR}/gitcrypt/$NAME.gpg ]; then
+            echo -n "Password for $NAME exists, use it? [Y/n]"
+			read answer
+			case "$answer" in
+				n*|N*)
+                    echo "You can remove ${PASSWORD_STORE_DIR}/gitcrypt/$NAME.gpg in order to create it."
+                    unset NAME
+					;;
+				*)
+                    skip_gen=1
+					;;
+			esac
+        fi
+	done
+    git config gitcrypt.name $NAME
+    if [ -z "$skip_gen" ]; then
+        gen_pass
+        save_pass
+    fi
+    create_git_conf
+}
+
+gen_pass () {
 	while [ 1 ]; do
 		while [ -z "$SALT" ]; do
 			echo -n "Generate a random salt? [Y/n] "
@@ -33,7 +79,7 @@ init_config() {
 			esac
 		done
 
-		while [ -z "$PASS" ]; do
+		while [ -z "$SKIP_GEN" -a -z "$PASS" ]; do
 			echo -n "Generate a random password? [Y/n]"
 			read answer
 
@@ -48,7 +94,7 @@ init_config() {
 			esac
 		done
 
-		while [ 1 ]; do
+		while [ -z "$SKIP_GEN" ]; do
 			echo -n "What encryption cipher do you want to use? [$DEFAULT_CIPHER] "
 			read CIPHER
 			[ -z "$CIPHER" ] && CIPHER="$DEFAULT_CIPHER"
@@ -80,7 +126,9 @@ init_config() {
 				;;
 		esac
 	done
+}
 
+create_git_conf () {
 	echo -n "Do you want to use .git/info/attributes? [Y/n] "
 	read answer
 
@@ -102,11 +150,6 @@ init_config() {
 	echo "$pattern filter=encrypt diff=encrypt" >> $attrs
 	echo "[merge]" >> $attrs
 	echo "    renormalize=true" >> $attrs
-
-	# Encryption
-	git config gitcrypt.salt "$SALT"
-	git config gitcrypt.pass "$PASS"
-	git config gitcrypt.cipher "$CIPHER"
 
 	# Filters
 	git config filter.encrypt.smudge "gitcrypt smudge"
@@ -131,22 +174,21 @@ _diff() {
 
 case "$1" in
 	clean|smudge|diff)
+        NAME=$(git config gitcrypt.name)
+        load_pass
 		# Need a shared salt
-		SALT=$(git config gitcrypt.salt)
 		if [ -z "$SALT" ]; then
 			echo "Gitcrypt: shared salt (gitcrypt.salt) has not been configured"
 			exit 1
 		fi
 
 		# Need a secure passphrase
-		PASS=$(git config gitcrypt.pass)
 		if [ -z "$PASS" ]; then
 			echo "Gitcrypt: secure passphrase (gitcrypt.pass) has not been configured"
 			exit 1
 		fi
 
 		# And a cipher mode
-		CIPHER=$(git config gitcrypt.cipher)
 		[ -z "$CIPHER" ] && CIPHER="$DEFAULT_CIPHER"
 
 		# Execute command
@@ -156,6 +198,16 @@ case "$1" in
 		# Run setup commands
 		init_config
 		;;
+	rm)
+        if [ -z "$2" ]; then
+            echo "gitcrypt rm <NAME>"
+            exit 1
+        fi
+		$PASS_PROG rm gitcrypt/$2
+		;;
+    ls)
+        $PASS_PROG ls gitcrypt
+        ;;
 	version)
 		# Show version
 		echo "gitcrypt version $VERSION"
@@ -163,7 +215,7 @@ case "$1" in
 	*)
 		# Not a valid option
     if [ -z "$1" ]; then
-      echo "Gitcrypt: available options: init, version"
+      echo "Gitcrypt: available options: init, version, ls, rm"
     else
 		  echo "Gitcrypt: command does not exist: $1"
     fi
