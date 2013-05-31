@@ -113,7 +113,9 @@ gen_pass () {
 		echo "pass:   $PASS"
 		echo "cipher: $CIPHER"
         echo
-		if ! yesno "Does this look right? [Y/n] " Y; then
+		if yesno "Does this look right? [Y/n] " Y; then
+            break
+        else
 			# Reconfigure
 			unset -v SALT
 			unset -v PASS
